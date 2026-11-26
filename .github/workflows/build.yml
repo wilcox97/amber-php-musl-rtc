@@ -1,0 +1,98 @@
+name: Rebuild on upstream changes
+
+on:
+  schedule:
+    # once a day - cheap (a few API calls) unless upstream actually moved
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild even if upstream has not changed'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      ext_rtc_head: ${{ steps.check.outputs.ext_rtc_head }}
+      php_binaries_head: ${{ steps.check.outputs.php_binaries_head }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          lock_ext_rtc=$(python3 -c "import json;print(json.load(open('VERSIONS.lock'))['ext_rtc_commit'])")
+          lock_php=$(python3 -c "import json;print(json.load(open('VERSIONS.lock'))['php_binaries_commit'])")
+          head_ext_rtc=$(git ls-remote https://github.com/Amber-PM/ext-rtc.git HEAD | cut -f1)
+          head_php=$(git ls-remote https://github.com/Amber-PM/PHP-Binaries.git HEAD | cut -f1)
+          echo "ext_rtc_head=$head_ext_rtc" >> "$GITHUB_OUTPUT"
+          echo "php_binaries_head=$head_php" >> "$GITHUB_OUTPUT"
+          if [ "$lock_ext_rtc" != "$head_ext_rtc" ] || [ "$lock_php" != "$head_php" ] || [ "${{ inputs.force }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update VERSIONS.lock to latest upstream commits
+        run: |
+          python3 - <<PYEOF
+          import json
+          d = json.load(open("VERSIONS.lock"))
+          d["ext_rtc_commit"] = "${{ needs.check-upstream.outputs.ext_rtc_head }}"
+          d["php_binaries_commit"] = "${{ needs.check-upstream.outputs.php_binaries_head }}"
+          json.dump(d, open("VERSIONS.lock", "w"), indent=2)
+          PYEOF
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf automake libtool pkg-config \
+            bison re2c cmake ninja-build git curl python3 m4 perl patchelf
+
+      - name: Run build pipeline
+        run: ./build.sh
+
+      - name: Locate built .ipk
+        id: ipk
+        run: |
+          ipk="$(find "$HOME/amber-rtc-build/output" -name '*.ipk' -print -quit)"
+          test -n "$ipk"
+          echo "path=$ipk" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$ipk")" >> "$GITHUB_OUTPUT"
+
+      - name: Commit updated VERSIONS.lock
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSIONS.lock
+          git commit -m "Rebuild: ext-rtc @ ${{ needs.check-upstream.outputs.ext_rtc_head }}, PHP-Binaries @ ${{ needs.check-upstream.outputs.php_binaries_head }}"
+          git push
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Auto-rebuild ${{ github.run_number }}"
+          body: |
+            Automatic rebuild triggered by an upstream change.
+
+            - ext-rtc: ${{ needs.check-upstream.outputs.ext_rtc_head }}
+            - PHP-Binaries: ${{ needs.check-upstream.outputs.php_binaries_head }}
+
+            This release has **not** been smoke-tested on real router
+            hardware automatically -- see `scripts/smoke-test.php` and
+            `scripts/deploy.py` to verify before relying on it.
+          files: ${{ steps.ipk.outputs.path }}

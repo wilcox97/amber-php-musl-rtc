@@ -1,0 +1,14 @@
+{
+  "ext_rtc_repo": "https://github.com/Amber-PM/ext-rtc.git",
+  "ext_rtc_commit": "e57c53411d4145fd8ea1504ccb1e2af239a04c29",
+  "php_binaries_repo": "https://github.com/Amber-PM/PHP-Binaries.git",
+  "php_binaries_commit": "c03271b7e3ecea74edfbed0c7fcdf9a51c41dc83",
+  "php_version": "8.4.27",
+  "libdatachannel_version": "0.24.6",
+  "last_verified_on_real_hardware": "2026-11-26",
+  "target": {
+    "openwrt_release": "23.05.4",
+    "openwrt_target": "sdx72/generic",
+    "arch": "aarch64_cortex-a53"
+  }
+}
